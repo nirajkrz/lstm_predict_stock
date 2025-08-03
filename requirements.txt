@@ -1,0 +1,10 @@
+streamlit
+yfinance
+numpy
+pandas
+matplotlib
+scikit-learn
+tensorflow
+requests
+
+#pip install streamlit yfinance keras scikit-learn matplotlib tensorflow
