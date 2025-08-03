@@ -43,5 +43,5 @@ To install the dependencies, you can use the `requirements.txt` provided.
 First, clone this repository to your local machine:
 
 ```bash
-git clone https://github.com/yourusername/stock-prediction-app.git
-cd stock-prediction-app
+git clone https://github.com/nirajkrz/lstm_predict_stock.git
+cd lstm_predict_stock
