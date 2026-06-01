@@ -499,10 +499,12 @@ Please provide:
     @staticmethod
     def generate_enhanced_analysis(ticker, company_info, recent_data, news, insider_data,
                                    predictions, actual_prices, future_predictions=None,
-                                   recommendation_data=None, technical_indicators=None):
+                                   recommendation_data=None, technical_indicators=None,
+                                   use_claude=False):
         """Generate comprehensive analysis with technical indicators."""
 
-        if AnalysisEngine.is_claude_enabled():
+        # If the user enabled Claude via the UI and an API key is configured, use it
+        if use_claude and AnalysisEngine.is_claude_enabled():
             claude_result = AnalysisEngine.generate_claude_analysis(
                 ticker, company_info, recent_data, news, insider_data,
                 predictions, actual_prices, future_predictions,
@@ -737,6 +739,10 @@ def main():
     # Analysis options
     show_rsi = st.sidebar.checkbox("Show RSI Analysis", value=True)
     show_technical = st.sidebar.checkbox("Show Technical Indicators", value=True)
+    use_claude = st.sidebar.checkbox(
+        "Enable Claude (Anthropic) for enhanced analysis",
+        value=AnalysisEngine.is_claude_enabled(),
+    )
 
     if st.sidebar.button("🚀 Analyze This Stock!", type="primary"):
         if not ticker:
@@ -848,7 +854,8 @@ def main():
                 ticker, company_info, data.tail(50), news,
                 (insider_purchases, insider_transactions),
                 predictions.flatten(), y_test_actual.flatten(),
-                future_predictions, recommendation_data, tech_indicators
+                future_predictions, recommendation_data, tech_indicators,
+                use_claude=use_claude
             )
             progress_bar.progress(100)
             status_text.text("✅ Analysis complete!")
