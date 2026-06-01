@@ -34,6 +34,11 @@ The app requires **Python 3.12** or higher and the following libraries:
 
 To install the dependencies, you can use the `requirements.txt` provided.
 
+### Optional Claude / Anthropic Integration
+
+- Set `ANTHROPIC_API_KEY` in your environment to enable Claude-powered financial analysis.
+- The app will automatically use Anthropic Claude for enhanced analysis and conclusions when the API key is configured.
+
 ---
 
 ## Installation

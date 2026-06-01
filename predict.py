@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import yfinance as yf
 import numpy as np
@@ -25,6 +26,16 @@ class DataHandler:
     """Handles all data loading and processing operations"""
 
     @staticmethod
+    def _parse_load_error(error):
+        """Detect common data loading errors and normalize the result."""
+        message = str(error) if error is not None else ""
+        lowered = message.lower()
+
+        if "too many requests" in lowered or "rate limit" in lowered or "429" in message:
+            return "rate_limit"
+        return message or "unknown_error"
+
+    @staticmethod
     @st.cache_data
     def load_stock_data(ticker, period="2y"):
         """Load historical stock data using yfinance."""
@@ -32,15 +43,13 @@ class DataHandler:
             stock = yf.Ticker(ticker)
             data = stock.history(period=period)
             if data.empty:
-                st.error(f"No data found for ticker {ticker}")
-                return None, None
+                return None, {"error": "no_data"}
 
             # Get company info
             info = stock.info
             return data, info
         except Exception as e:
-            st.error(f"Error loading data for {ticker}: {str(e)}")
-            return None, None
+            return None, {"error": DataHandler._parse_load_error(e), "details": str(e)}
 
     @staticmethod
     @st.cache_data
@@ -357,6 +366,123 @@ class AnalysisEngine:
         return recommendation, confidence, reason_text, price_change_pct
 
     @staticmethod
+    def is_claude_enabled():
+        """Return True when Anthropic Claude integration is configured (env or Streamlit secrets)."""
+        key = os.environ.get("ANTHROPIC_API_KEY")
+        try:
+            if not key and hasattr(st, "secrets"):
+                key = st.secrets.get("ANTHROPIC_API_KEY")
+        except Exception:
+            # If streamlit isn't available at import/runtime, ignore
+            pass
+        return bool(key)
+
+    @staticmethod
+    def generate_claude_analysis(ticker, company_info, recent_data, news, insider_data,
+                                 predictions, actual_prices, future_predictions=None,
+                                 recommendation_data=None, technical_indicators=None):
+        """Generate enhanced analysis using Anthropic Claude."""
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            try:
+                api_key = st.secrets.get("ANTHROPIC_API_KEY") if hasattr(st, "secrets") else None
+            except Exception:
+                api_key = None
+        if not api_key:
+            return None
+
+        model = os.environ.get("CLAUDE_MODEL") or (st.secrets.get("CLAUDE_MODEL") if hasattr(st, "secrets") else None) or "claude-3.5-mini"
+        prompt = AnalysisEngine._build_claude_prompt(
+            ticker, company_info, recent_data, news, insider_data,
+            predictions, actual_prices, future_predictions, recommendation_data,
+            technical_indicators
+        )
+
+        url = "https://api.anthropic.com/v1/complete"
+        headers = {
+            "x-api-key": api_key,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "max_tokens_to_sample": 700,
+            "temperature": 0.7,
+            "top_p": 1.0,
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("completion") or result.get("response") or None
+            return None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _build_claude_prompt(ticker, company_info, recent_data, news, insider_data,
+                             predictions, actual_prices, future_predictions,
+                             recommendation_data, technical_indicators):
+        """Build a Claude prompt that leverages financial analysis skills."""
+        latest_price = recent_data['Close'].iloc[-1]
+        prev_price = recent_data['Close'].iloc[-2]
+        price_change = ((latest_price - prev_price) / prev_price) * 100
+        avg_predicted = np.mean(predictions) if len(predictions) else None
+        expected_change = None
+        if future_predictions:
+            expected_change = ((np.mean(future_predictions) - latest_price) / latest_price) * 100
+
+        rsi_current = technical_indicators['RSI'].iloc[-1] if technical_indicators and 'RSI' in technical_indicators else None
+        sma_20 = technical_indicators['SMA_20'].iloc[-1] if technical_indicators and 'SMA_20' in technical_indicators else None
+        sma_50 = technical_indicators['SMA_50'].iloc[-1] if technical_indicators and 'SMA_50' in technical_indicators else None
+
+        news_summary = "\n".join([f"- {item.get('title', 'No title')}" for item in (news or [])[:3]])
+        insider_summary = "No insider trading data available"
+        if insider_data and insider_data[0] is not None:
+            insider_summary = f"Insider purchases: {len(insider_data[0])}, insider transactions: {len(insider_data[1]) if insider_data[1] is not None else 0}"
+
+        recommendation_text = "None"
+        if recommendation_data:
+            recommendation_text = f"{recommendation_data[0]} ({recommendation_data[1]} confidence) - {recommendation_data[2]}"
+
+        avg_predicted_str = f"${avg_predicted:.2f}" if avg_predicted is not None else "N/A"
+        expected_change_str = f"{expected_change:+.2f}%" if expected_change is not None else "N/A"
+        rsi_str = f"{rsi_current:.1f}" if rsi_current is not None else "N/A"
+        sma_20_str = f"${sma_20:.2f}" if sma_20 is not None else "N/A"
+        sma_50_str = f"${sma_50:.2f}" if sma_50 is not None else "N/A"
+
+        prompt = f"""
+You are Claude, a financial analysis expert with advanced skill sets in stock research, technical indicators, momentum, risk evaluation, and practical investment summaries. Use the information below to create a clear, concise investment analysis and conclusion. Do NOT provide legal or investment advice; label this as educational information only.
+
+Ticker: {ticker.upper()}
+Company: {company_info.get('longName', ticker)}
+Sector: {company_info.get('sector', 'Unknown')}
+Market Cap: {company_info.get('marketCap', 'Unknown')}
+
+Latest Price: ${latest_price:.2f}
+Recent Price Change: {price_change:+.2f}%
+Average Predicted Price (test set): {avg_predicted_str}
+Future 7-day Expected Change: {expected_change_str}
+RSI: {rsi_str}
+20-day SMA: {sma_20_str}
+50-day SMA: {sma_50_str}
+Recommendation: {recommendation_text}
+
+Recent headlines:
+{news_summary}
+Insider summary: {insider_summary}
+
+Please provide:
+1. A brief market outlook.
+2. Technical strengths and weaknesses.
+3. Risk factors to watch.
+4. A short conclusion with what investors should monitor next.
+5. Mention that this is educational and not a substitute for professional advice.
+"""
+        return prompt
+
+    @staticmethod
     def check_ollama_status():
         """Check if Ollama is running and get available models."""
         try:
@@ -376,16 +502,23 @@ class AnalysisEngine:
                                    recommendation_data=None, technical_indicators=None):
         """Generate comprehensive analysis with technical indicators."""
 
+        if AnalysisEngine.is_claude_enabled():
+            claude_result = AnalysisEngine.generate_claude_analysis(
+                ticker, company_info, recent_data, news, insider_data,
+                predictions, actual_prices, future_predictions,
+                recommendation_data, technical_indicators
+            )
+            if claude_result:
+                return claude_result
+
         ollama_running, available_models = AnalysisEngine.check_ollama_status()
 
-        if not ollama_running:
+        if ollama_running:
             return AnalysisEngine.generate_fallback_analysis(
                 ticker, company_info, recent_data, news, predictions, actual_prices,
                 future_predictions, recommendation_data, technical_indicators
             )
 
-        # Enhanced Ollama analysis would go here
-        # For now, return fallback analysis
         return AnalysisEngine.generate_fallback_analysis(
             ticker, company_info, recent_data, news, predictions, actual_prices,
             future_predictions, recommendation_data, technical_indicators
@@ -452,7 +585,7 @@ Market volatility: {recent_data['Close'].pct_change().tail(20).std() * 100:.1f}%
 💡 **BOTTOM LINE:**
 Based on technical analysis and AI predictions, consider the RSI levels and recent price action before making decisions.
 
-🔧 **Pro Tip:** Install Ollama for more detailed AI insights: `ollama serve` then `ollama pull llama3.2`
+🔧 **Pro Tip:** Set `ANTHROPIC_API_KEY` to enable Claude-powered financial analysis, or install Ollama for local AI insights.
 """
 
         return analysis
@@ -625,7 +758,29 @@ def main():
             data, company_info = DataHandler.load_stock_data(ticker, period_map[period])
 
             if data is None:
-                st.error("Couldn't find data for this stock. Check the symbol and try again!")
+                error_key = None
+                if isinstance(company_info, dict):
+                    error_key = company_info.get("error")
+
+                if error_key == "rate_limit":
+                    st.error(
+                        f"Unable to load data for {ticker.upper()} because the data provider is currently rate limited."
+                    )
+                    st.info(
+                        "Try again after a minute, or use a different ticker symbol. "
+                        "If this persists, the data source may be temporarily unavailable."
+                    )
+                elif error_key == "no_data":
+                    st.error(
+                        f"Couldn't find data for {ticker.upper()}. "
+                        "Please verify the stock symbol and try again."
+                    )
+                else:
+                    st.error(
+                        f"Couldn't load data for {ticker.upper()}. "
+                        "Please verify the symbol and try again later."
+                    )
+
                 return
 
             progress_bar.progress(10)
